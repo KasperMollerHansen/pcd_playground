@@ -16,20 +16,16 @@ if len(pcd.colors) == 0:
 print(f"✅ Loaded point cloud with {len(points)} points.")
 
 # --- Normalize points for better GMM stability ---
-
-# --- Fit GMMs for a range of k ---
 max_k = 20
-bics, aics, models = [], [], []
 
 print("🔄 Fitting GMM models (iterative elbow detection)...")
-bics, aics, models = [], [], []
+bics, models = [], []
 threshold = 0.05  # 5% relative improvement cutoff
 elbow_idx = None
 for k in range(1, max_k + 1):
     gmm = GaussianMixture(n_components=k, covariance_type="full", random_state=42)
     gmm.fit(points)
     bics.append(gmm.bic(points))
-    aics.append(gmm.aic(points))
     models.append(gmm)
     print(f"  k={k}: BIC={bics[-1]:.2f}")
     if k > 1:
@@ -44,7 +40,6 @@ if elbow_idx is None:
     elbow_idx = int(np.argmin(bics))
 
 bics = np.array(bics)
-aics = np.array(aics)
 best_k = elbow_idx
 best_gmm = models[best_k - 1]
 print(f"\n✅ Best number of clusters (automatic elbow): k={best_k}")
@@ -52,11 +47,10 @@ print(f"\n✅ Best number of clusters (automatic elbow): k={best_k}")
 # --- Plot BIC/AIC curves ---
 plt.figure(figsize=(8, 5))
 plt.plot(range(1, len(bics) + 1), bics, label='BIC', marker='o')
-plt.plot(range(1, len(aics) + 1), aics, label='AIC', marker='x', linestyle='--')
 plt.axvline(best_k, color='red', linestyle=':', label=f'Chosen k={best_k}')
 plt.xlabel('Number of clusters (k)')
 plt.ylabel('Score')
-plt.title('GMM BIC/AIC Curve with Automatic Elbow Detection')
+plt.title('GMM BIC Curve with Automatic Elbow Detection')
 plt.legend()
 plt.grid()
 plt.show(block=False)
