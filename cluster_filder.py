@@ -264,13 +264,8 @@ class skeletonizer:
     def densify_skeleton(self, merged_edge_points, merged_clusters, points, labels, 
                         voxel_size, max_dist=5, min_points_for_skeleton=10):
         """
-        Fit skeleton inside the structure by:
-        1. For each cluster, extract all points belonging to that cluster
-        2. Build minimum spanning tree of edge points
-        3. Use medial axis approximation to find centerline points
-        4. Connect with smooth curves that follow the structure's shape
-        
-        Returns: dict {cluster: list of (x, y, z) skeleton points}
+        Fit skeleton inside the structure while incorporating merged edge points as key skeleton points.
+        Returns: dict {cluster: list of (x, y, z) skeleton points including edge points}
         """
         from scipy.interpolate import splprep, splev
         from sklearn.neighbors import NearestNeighbors
@@ -292,6 +287,9 @@ class skeletonizer:
                 continue
                 
             edge_pts = np.array([merged_edge_points[i] for i in idxs])
+            
+            # Start with edge points as key skeleton points
+            skel_points = set(tuple(pt) for pt in edge_pts)
             
             # Build minimum spanning tree of edge points
             n = len(edge_pts)
@@ -315,8 +313,19 @@ class skeletonizer:
             endpoints = [node for node in G.nodes() if G.degree(node) == 1]
             
             if len(endpoints) < 2:
-                # If no clear endpoints, use all points
-                skel_points = self._fit_medial_axis(cluster_points, edge_pts, voxel_size)
+                # If no clear endpoints, add medial axis points between edge points
+                for i, j in mst_edges:
+                    p1, p2 = edge_pts[int(i)], edge_pts[int(j)]
+                    d = np.linalg.norm(p2 - p1)
+                    n_steps = max(1, int(np.ceil(d / (max_dist * voxel_size))))
+                    for t in range(1, n_steps):
+                        interp = p1 + (p2 - p1) * (t / n_steps)
+                        skel_points.add(tuple(interp))
+                
+                # Add additional medial axis points for better coverage
+                medial_points = self._fit_medial_axis(cluster_points, edge_pts, voxel_size)
+                for pt in medial_points:
+                    skel_points.add(tuple(pt))
             else:
                 # Find longest path between endpoints (main skeleton branch)
                 longest_path = []
@@ -338,7 +347,7 @@ class skeletonizer:
                     # Extract points along the longest path
                     main_branch_points = edge_pts[longest_path]
                     
-                    # Fit smooth curve through the main branch
+                    # Fit smooth curve through the main branch (including edge points)
                     try:
                         # Parameterize by cumulative distance
                         cum_dist = np.zeros(len(main_branch_points))
@@ -357,91 +366,135 @@ class skeletonizer:
                         spline_points = np.array(splev(u_new, tck)).T
                         
                         # Project points to medial axis of the cluster
-                        skel_points = self._project_to_medial_axis(spline_points, cluster_points, voxel_size)
+                        medial_points = self._project_to_medial_axis(spline_points, cluster_points, voxel_size)
                         
-                    except:
-                        # Fallback: use medial axis approximation
-                        skel_points = self._fit_medial_axis(cluster_points, edge_pts, voxel_size)
-                else:
-                    skel_points = self._fit_medial_axis(cluster_points, edge_pts, voxel_size)
+                        # Add medial axis points to skeleton
+                        for pt in medial_points:
+                            skel_points.add(tuple(pt))
+                            
+                    except Exception as e:
+                        print(f"Curve fitting failed for cluster {k}: {e}")
+                        # Fallback: interpolate between edge points
+                        for i, j in mst_edges:
+                            p1, p2 = edge_pts[int(i)], edge_pts[int(j)]
+                            d = np.linalg.norm(p2 - p1)
+                            n_steps = max(1, int(np.ceil(d / (max_dist * voxel_size))))
+                            for t in range(1, n_steps):
+                                interp = p1 + (p2 - p1) * (t / n_steps)
+                                skel_points.add(tuple(interp))
+                
+                # Also add connections for all other edges
+                for i, j in mst_edges:
+                    if (int(i), int(j)) not in zip(longest_path[:-1], longest_path[1:]):
+                        p1, p2 = edge_pts[int(i)], edge_pts[int(j)]
+                        d = np.linalg.norm(p2 - p1)
+                        n_steps = max(1, int(np.ceil(d / (max_dist * voxel_size))))
+                        for t in range(1, n_steps):
+                            interp = p1 + (p2 - p1) * (t / n_steps)
+                            skel_points.add(tuple(interp))
             
-            if len(skel_points) > 0:
-                densified[k] = skel_points
+            if skel_points:
+                densified[k] = np.array(list(skel_points))
         
         return densified
 
-    def _fit_medial_axis(self, cluster_points, edge_points, voxel_size, n_samples=50):
+    def plot_densified_skeletons(self, points, densified, merged_edge_points, title="Complete Skeleton with Edge Points"):
         """
-        Approximate medial axis by finding points that are equidistant from boundaries
+        Plot the complete skeleton including edge points as key skeleton points
         """
-        if len(cluster_points) == 0:
-            return np.array([])
-        
-        # Use edge points as boundary references
-        if len(edge_points) < 2:
-            return cluster_points[np.random.choice(len(cluster_points), min(n_samples, len(cluster_points)), replace=False)]
-        
-        # Find points that are maximally distant from boundaries
-        from sklearn.neighbors import NearestNeighbors
-        nn = NearestNeighbors(n_neighbors=1)
-        nn.fit(edge_points)
-        
-        # Calculate distance to nearest boundary for each cluster point
-        distances, _ = nn.kneighbors(cluster_points)
-        distances = distances.flatten()
-        
-        # Select points with largest distances (medial axis candidates)
-        n_select = min(n_samples, len(cluster_points))
-        if n_select == 0:
-            return np.array([])
-        
-        # Get top n_select points with largest distances to boundary
-        indices = np.argpartition(distances, -n_select)[-n_select:]
-        medial_points = cluster_points[indices]
-        
-        return medial_points
-
-    def _project_to_medial_axis(self, curve_points, cluster_points, voxel_size, k_neighbors=10):
-        """
-        Project curve points to the approximate medial axis of the cluster
-        """
-        if len(cluster_points) == 0 or len(curve_points) == 0:
-            return curve_points
-        
-        from sklearn.neighbors import NearestNeighbors
-        
-        projected_points = []
-        
-        for pt in curve_points:
-            # Find nearest neighbors in the cluster
-            nn = NearestNeighbors(n_neighbors=min(k_neighbors, len(cluster_points)))
-            nn.fit(cluster_points)
-            distances, indices = nn.kneighbors([pt])
-            
-            # Use centroid of nearest neighbors as projection
-            if len(indices) > 0:
-                neighbors = cluster_points[indices[0]]
-                projected = np.mean(neighbors, axis=0)
-                projected_points.append(projected)
-            else:
-                projected_points.append(pt)
-        
-        return np.array(projected_points)
-
-    def plot_densified_skeletons(self, points, densified, title="Densified Skeletons (per cluster)"):
-        fig = plt.figure(figsize=(10, 8))
+        fig = plt.figure(figsize=(12, 10))
         ax = fig.add_subplot(111, projection='3d')
-        ax.scatter(points[:, 0], points[:, 1], points[:, 2], c='lightgray', s=2, label='All Points')
-        colors = ['r', 'g', 'b', 'm', 'c', 'y', 'k']
+        
+        # Plot all points
+        ax.scatter(points[:, 0], points[:, 1], points[:, 2], 
+                c='lightgray', s=2, alpha=0.3, label='All Points')
+        
+        colors = plt.cm.tab10.colors
+        
         for k, skel_pts in densified.items():
             color = colors[k % len(colors)]
-            ax.scatter(skel_pts[:, 0], skel_pts[:, 1], skel_pts[:, 2], c=color, s=40, label=f'Cluster {k} Skeleton')
+            
+            # Plot all skeleton points (including edge points)
+            ax.scatter(skel_pts[:, 0], skel_pts[:, 1], skel_pts[:, 2], 
+                    c=color, s=40, alpha=0.8, label=f'Cluster {k} Skeleton')
+            
+            # Highlight the original edge points within the skeleton
+            edge_mask = self._identify_edge_points_in_skeleton(skel_pts, merged_edge_points)
+            if np.any(edge_mask):
+                edge_pts = skel_pts[edge_mask]
+                ax.scatter(edge_pts[:, 0], edge_pts[:, 1], edge_pts[:, 2], 
+                        c=color, s=100, marker='o', edgecolors='black', 
+                        linewidth=2.0, label=f'Cluster {k} Key Points')
+        
         ax.set_xlabel('X')
         ax.set_ylabel('Y')
         ax.set_zlabel('Z')
         self.set_axes_equal(ax)
         plt.title(title)
+        plt.legend()
         plt.show()
+
+    def _identify_edge_points_in_skeleton(self, skeleton_points, merged_edge_points, tol=1e-3):
+        """
+        Identify which skeleton points are original edge points
+        """
+        if len(skeleton_points) == 0 or len(merged_edge_points) == 0:
+            return np.zeros(len(skeleton_points), dtype=bool)
+        
+        from sklearn.neighbors import NearestNeighbors
+        
+        # Find nearest edge point for each skeleton point
+        nn = NearestNeighbors(n_neighbors=1)
+        nn.fit(merged_edge_points)
+        distances, _ = nn.kneighbors(skeleton_points)
+        
+        # Points that are very close to an edge point are considered edge points
+        return distances.flatten() < tol
+
+    def save_complete_skeleton(self, densified, merged_edge_points, merged_clusters, filename='complete_skeleton'):
+        """
+        Save the complete skeleton with edge points included and marked
+        """
+        all_skeleton_points = []
+        cluster_labels = []
+        is_edge_point = []  # Boolean indicating if point is an original edge point
+        
+        for k, skel_pts in densified.items():
+            all_skeleton_points.extend(skel_pts)
+            cluster_labels.extend([k] * len(skel_pts))
+            
+            # Identify which points in this cluster's skeleton are edge points
+            cluster_edge_idxs = [i for i, clist in enumerate(merged_clusters) if k in clist]
+            cluster_edge_pts = merged_edge_points[cluster_edge_idxs] if cluster_edge_idxs else np.array([])
+            
+            edge_mask = self._identify_edge_points_in_skeleton(skel_pts, cluster_edge_pts)
+            is_edge_point.extend(edge_mask.tolist())
+        
+        all_skeleton_points = np.array(all_skeleton_points)
+        is_edge_point = np.array(is_edge_point)
+        
+        # Save as NPZ with metadata
+        np.savez(filename + '.npz', 
+                skeleton_points=all_skeleton_points,
+                cluster_labels=np.array(cluster_labels),
+                is_edge_point=is_edge_point,
+                edge_points=merged_edge_points)
+        
+        # Save visualization PCD with different colors for edge points
+        vis_pcd = o3d.geometry.PointCloud()
+        vis_pcd.points = o3d.utility.Vector3dVector(all_skeleton_points)
+        
+        # Color edge points red, other skeleton points blue
+        colors = np.zeros((len(all_skeleton_points), 3))
+        colors[is_edge_point] = [1, 0, 0]  # Red for edge points
+        colors[~is_edge_point] = [0, 0, 1]  # Blue for other skeleton points
+        
+        vis_pcd.colors = o3d.utility.Vector3dVector(colors)
+        
+        o3d.io.write_point_cloud(filename + '.pcd', vis_pcd)
+        print(f"Saved complete skeleton with {np.sum(is_edge_point)} edge points "
+            f"and {np.sum(~is_edge_point)} medial points to {filename}.pcd")
+
     
     def main(self):
         pcd, points = self.load_point_cloud("static_cloud.pcd")
@@ -457,9 +510,19 @@ class skeletonizer:
         self.plot_point_cloud_with_edges(points, merged_edge_points, raw_centroids, edge_color, centroid_color,
             'Merged Cluster Edges (Red) and Centroids (Blue) in Point Cloud')
             # Densify skeletons so all segments <= 5*voxel_size
-        densified = self.densify_skeleton(merged_edge_points, merged_clusters, points, labels, 
-                                        self.voxel_size, max_dist=5)
-        self.plot_densified_skeletons(points, densified, title="Fitted Skeletons Inside Structure")
+        # The merged edge points are now integrated into the skeleton
+        densified = self.densify_skeleton(
+            merged_edge_points, merged_clusters, points, labels, 
+            self.voxel_size, max_dist=5
+        )
+        
+        # Plot the complete skeleton with edge points included
+        self.plot_densified_skeletons(
+            points, densified, merged_edge_points,
+            title="Complete Skeleton with Integrated Edge Points"
+        )
+        # Save the complete skeleton with edge points marked
+        self.save_complete_skeleton(densified, merged_edge_points, merged_clusters)
 
 
 
