@@ -62,7 +62,6 @@ plt.grid()
 plt.show(block=False)
 
 # --- Predict cluster labels for each point ---
-# --- Predict cluster labels for each point ---
 labels = best_gmm.predict(points)
 print(f"Cluster sizes: {np.bincount(labels)}")
 
