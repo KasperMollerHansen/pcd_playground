@@ -109,10 +109,10 @@ class skeletonizer:
 
                 if dots[max_idx] > self.dot_threshold:
                     # ✅ Compare distance with the matching selected distance (not just last)
-                    if np.isclose(dist, selected_dist[max_idx], atol= self.super_voxel_size / 2 * self.voxel_size):
+                    if np.isclose(dist, selected_dist[max_idx], atol= 2 * self.voxel_size):
                         # Require the candidate to be close to ALL selected points
                         if all(
-                            np.linalg.norm(points[idx] - points[si]) > self.super_voxel_size * self.voxel_size
+                            np.linalg.norm(points[idx] - points[si]) > 4 * self.voxel_size
                             for si in selected_indices
                         ):
                             selected_indices.append(idx)
@@ -278,5 +278,5 @@ class skeletonizer:
 
 #%%
 skel = skeletonizer(voxel_size=1.0, super_voxel_factor=4.0,
-                     max_edge_points=50, dot_threshold=0.95, min_dist_factor=10.0, max_clusters=20, merge_radius_factor=5.0)
+                     max_edge_points=50, dot_threshold=0.8, min_dist_factor=10.0, max_clusters=20, merge_radius_factor=5.0)
 skel.main()
