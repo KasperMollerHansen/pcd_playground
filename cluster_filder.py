@@ -609,10 +609,10 @@ class skeletonizer:
         merged_clusters = updated_merged_clusters
 
         # Save the cleaned skeleton with updated edge points
-        self.save_complete_skeleton(merged_densified, merged_edge_points, merged_clusters)
+        self.save_complete_skeleton(extended_densified, merged_edge_points, merged_clusters)
 
         # Check for duplicate points
-        unique_points, counts = self.check_duplicate_points(merged_densified)
+        unique_points, counts = self.check_duplicate_points(extended_densified)
 
         # Print duplicate point information
         print(f"Total unique points after densification: {len(unique_points)}")
