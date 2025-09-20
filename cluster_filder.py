@@ -2,6 +2,7 @@ import collections
 import numpy as np
 import open3d as o3d
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 from sklearn.cluster import DBSCAN
 from sklearn.mixture import GaussianMixture
 
@@ -260,6 +261,53 @@ class skeletonizer:
         ax.set_ylim3d([y_middle - plot_radius, y_middle + plot_radius])
         ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
     
+    def densify_skeleton(self, merged_edge_points, merged_clusters, voxel_size, max_dist=5):
+        """
+        For each cluster, interpolate points along MST skeleton edges so that no segment exceeds max_dist * voxel_size.
+        Returns: dict {cluster: list of (x, y, z) skeleton points}
+        """
+        from scipy.sparse.csgraph import minimum_spanning_tree
+        densified = {}
+        for k in set(i for clist in merged_clusters for i in clist):
+            idxs = [i for i, clist in enumerate(merged_clusters) if k in clist]
+            if len(idxs) < 2:
+                continue
+            edge_pts = np.array([merged_edge_points[i] for i in idxs])
+            n = len(edge_pts)
+            dist_matrix = np.full((n, n), np.inf)
+            for i in range(n):
+                for j in range(i+1, n):
+                    d = np.linalg.norm(edge_pts[i] - edge_pts[j])
+                    dist_matrix[i, j] = dist_matrix[j, i] = d
+            mst = minimum_spanning_tree(dist_matrix)
+            mst_edges = np.array(mst.nonzero()).T
+            skel_points = set(tuple(pt) for pt in edge_pts)
+            for i, j in mst_edges:
+                p1, p2 = edge_pts[int(i)], edge_pts[int(j)]
+                d = np.linalg.norm(p2 - p1)
+                n_steps = max(1, int(np.ceil(d / (max_dist * voxel_size))))
+                for t in range(1, n_steps):
+                    interp = p1 + (p2 - p1) * (t / n_steps)
+                    skel_points.add(tuple(interp))
+            if skel_points:
+                densified[k] = np.array(sorted(skel_points))
+        return densified
+
+    def plot_densified_skeletons(self, points, densified, title="Densified Skeletons (per cluster)"):
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection='3d')
+        ax.scatter(points[:, 0], points[:, 1], points[:, 2], c='lightgray', s=2, label='All Points')
+        colors = ['r', 'g', 'b', 'm', 'c', 'y', 'k']
+        for k, skel_pts in densified.items():
+            color = colors[k % len(colors)]
+            ax.scatter(skel_pts[:, 0], skel_pts[:, 1], skel_pts[:, 2], c=color, s=40, label=f'Cluster {k} Skeleton')
+        ax.set_xlabel('X')
+        ax.set_ylabel('Y')
+        ax.set_zlabel('Z')
+        self.set_axes_equal(ax)
+        plt.title(title)
+        plt.show()
+    
     def main(self):
         pcd, points = self.load_point_cloud("static_cloud.pcd")
         labels, best_k, best_gmm = self.cluster_detection(points)
@@ -273,6 +321,9 @@ class skeletonizer:
         self.save_merged_points(merged_edge_points, raw_centroids, edge_color, centroid_color)
         self.plot_point_cloud_with_edges(points, merged_edge_points, raw_centroids, edge_color, centroid_color,
             'Merged Cluster Edges (Red) and Centroids (Blue) in Point Cloud')
+            # Densify skeletons so all segments <= 5*voxel_size
+        densified = self.densify_skeleton(merged_edge_points, merged_clusters, self.voxel_size, max_dist=5)
+        self.plot_densified_skeletons(points, densified, title="Densified Skeletons (per cluster)")
 
 
 
