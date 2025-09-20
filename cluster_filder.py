@@ -5,36 +5,12 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from sklearn.cluster import DBSCAN
 from sklearn.mixture import GaussianMixture
+from sklearn.neighbors import NearestNeighbors
+
 from scipy.sparse.csgraph import minimum_spanning_tree
 
 
-class skeletonizer:
-    def add_extension_points(self, merged_edge_points, merged_clusters, centroids, extension_length=5.0):
-        """
-        For each tip edge point (associated with only one cluster), place a point in the direction away from its nearest other merged edge point, extension_length meters beyond the edge point.
-        Returns: np.ndarray of extension points
-        """
-        extension_points = []
-        if len(merged_edge_points) < 2:
-            return np.empty((0, 3))
-        merged_edge_points = np.asarray(merged_edge_points)
-        for i, (pt, clusters) in enumerate(zip(merged_edge_points, merged_clusters)):
-            if len(clusters) == 1:
-                # Find nearest other merged edge point
-                others = np.delete(merged_edge_points, i, axis=0)
-                if len(others) == 0:
-                    continue
-                dists = np.linalg.norm(others - pt, axis=1)
-                nearest = others[np.argmin(dists)]
-                direction = pt - nearest
-                norm = np.linalg.norm(direction)
-                if norm == 0:
-                    continue
-                direction = direction / norm
-                ext_pt = pt + direction * extension_length
-                extension_points.append(ext_pt)
-        return np.array(extension_points)
-    
+class skeletonizer:    
     def __init__(self, voxel_size=1.0, super_voxel_factor=4.0,
                  max_edge_points=10, dot_threshold=0.8, min_dist_factor=5.0, max_clusters=20,
                  merge_radius_factor=10.0):
@@ -429,6 +405,47 @@ class skeletonizer:
         updated_merged_edge_points = np.array(updated_merged_edge_points)
         
         return merged_densified, updated_merged_edge_points, updated_merged_clusters
+    
+    def extend_single_cluster_endpoints(self, merged_densified, merged_edge_points, merged_clusters, voxel_size):
+        """
+        Extend single-cluster edge points by 1 voxel size in the direction from the closest densified point (excluding itself) to the edge point.
+        """
+        extended_densified = merged_densified.copy()
+
+        for k, skel_pts in merged_densified.items():
+            # Find edge points that belong only to this cluster
+            single_cluster_edge_points = []
+            for i, clusters in enumerate(merged_clusters):
+                if len(clusters) == 1 and clusters[0] == k:
+                    single_cluster_edge_points.append(merged_edge_points[i])
+
+            if not single_cluster_edge_points or len(skel_pts) < 2:
+                continue
+
+            single_cluster_edge_points = np.array(single_cluster_edge_points)
+            extended_points = []
+
+            # For each edge point, find the closest other densified point (not itself)
+            for edge_point in single_cluster_edge_points:
+                # Exclude the edge point itself from the search
+                other_skel_pts = skel_pts[np.any(np.abs(skel_pts - edge_point) > 1e-8, axis=1)]
+                if len(other_skel_pts) == 0:
+                    continue
+                dists = np.linalg.norm(other_skel_pts - edge_point, axis=1)
+                closest_pt = other_skel_pts[np.argmin(dists)]
+                direction = edge_point - closest_pt
+                direction_norm = np.linalg.norm(direction)
+                if direction_norm > 0:
+                    direction /= direction_norm
+                    extension_point = edge_point + direction * voxel_size
+                    extended_points.append(extension_point)
+            print(f"Extended {len(extended_points)} single-cluster edge points for cluster {k}.")
+            if extended_points:
+                extended_points = np.array(extended_points)
+                current_points = extended_densified[k]
+                extended_densified[k] = np.vstack([current_points, extended_points])
+
+        return extended_densified
 
         
     def plot_densified_skeletons(self, points, densified, merged_edge_points, title="Complete Skeleton with Edge Points"):
@@ -567,12 +584,10 @@ class skeletonizer:
         merged_densified, updated_merged_edge_points, updated_merged_clusters = self.merge_skeleton_points(
             densified, merged_edge_points, merged_clusters
         )
-
-        # Test if merging changes anything
-        if len(updated_merged_edge_points) != len(merged_edge_points):
-            print(f"Edge point merging changed the number of edge points from {len(merged_edge_points)} to {len(updated_merged_edge_points)}")
-        else:
-            print("Edge point merging did not change the number of edge points.")
+        # EXTEND SINGLE-CLUSTER ENDPOINTS by exactly 1 voxel size
+        extended_densified = self.extend_single_cluster_endpoints(
+            merged_densified,  updated_merged_edge_points, updated_merged_clusters, 2.5*self.voxel_size
+        )
 
         # Plot both versions for comparison
         self.plot_densified_skeletons(
@@ -583,6 +598,10 @@ class skeletonizer:
         self.plot_densified_skeletons(
             points, merged_densified, updated_merged_edge_points,
             title="Skeleton After Edge Point Merging"
+        )
+        self.plot_densified_skeletons(
+            points, extended_densified, updated_merged_edge_points,
+            title="Skeleton After Extending Single-Cluster Endpoints"
         )
 
         # Update the merged_edge_points with the newly merged ones
@@ -601,17 +620,6 @@ class skeletonizer:
 
         # Also save the updated merged edge points
         self.save_pointcloud_with_clusters(merged_edge_points, merged_clusters, 'final_merged_edge_points')
-
-        # Add extension points at tip edge points
-        extension_points = self.add_extension_points(merged_edge_points, merged_clusters, raw_centroids, extension_length=5.0)
-        if len(extension_points) > 0:
-            print(f"Added {len(extension_points)} extension points at tip edge points.")
-            # Save as PCD for visualization
-            ext_pcd = o3d.geometry.PointCloud()
-            ext_pcd.points = o3d.utility.Vector3dVector(extension_points)
-            ext_pcd.paint_uniform_color([0,1,0])  # Green
-            o3d.io.write_point_cloud('extension_points.pcd', ext_pcd)
-            print("Saved extension_points.pcd for visualization.")
 
 #%%
 skel = skeletonizer(voxel_size=1.0, super_voxel_factor=4.0,
