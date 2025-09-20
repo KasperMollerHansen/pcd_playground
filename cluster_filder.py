@@ -90,21 +90,52 @@ class skeletonizer:
         # 4. Select up to max_edge_points with unique directions
         selected_indices = []
         selected_dirs = []
+        selected_dist = []
         min_dist = self.min_dist_factor * self.voxel_size
         for idx, dist in idx_dist:
             if dist < min_dist:
                 continue
+
             dir_vec = points[idx] - centroid
-            if np.linalg.norm(dir_vec) == 0:
+            norm = np.linalg.norm(dir_vec)
+            if norm == 0:
                 continue
-            dir_vec = dir_vec / np.linalg.norm(dir_vec)
-            if any(np.dot(dir_vec, sel_dir) > self.dot_threshold for sel_dir in selected_dirs):
-                continue
+            dir_vec /= norm
+
+            if selected_dirs:
+                # Compute dot products with all selected directions
+                dots = np.dot(selected_dirs, dir_vec)
+                max_idx = np.argmax(dots)
+
+                if dots[max_idx] > self.dot_threshold:
+                    # ✅ Compare distance with the matching selected distance (not just last)
+                    if np.isclose(dist, selected_dist[max_idx], atol= self.super_voxel_size / 2 * self.voxel_size):
+                        # Require the candidate to be close to ALL selected points
+                        if all(
+                            np.linalg.norm(points[idx] - points[si]) > self.super_voxel_size * self.voxel_size
+                            for si in selected_indices
+                        ):
+                            selected_indices.append(idx)
+                            selected_dirs.append(dir_vec)
+                            selected_dist.append(dist)
+                            continue
+                        else:
+                            # Too close to an existing point → skip
+                            continue
+                    else:
+                        # Direction too similar but distance not close → reject
+                        continue
+
+            # If we get here, either no similar direction or candidate passed checks
             selected_indices.append(idx)
             selected_dirs.append(dir_vec)
+            selected_dist.append(dist)
+
             if len(selected_indices) >= self.max_edge_points:
                 break
+
         return centroid, selected_indices
+
 
     def extract_edges_and_centroids(self, points, labels, best_k):
         edge_color = np.array([1, 0, 0])  # Red
@@ -247,5 +278,5 @@ class skeletonizer:
 
 #%%
 skel = skeletonizer(voxel_size=1.0, super_voxel_factor=4.0,
-                     max_edge_points=10, dot_threshold=0.95, min_dist_factor=10.0, max_clusters=20, merge_radius_factor=5.0)
+                     max_edge_points=50, dot_threshold=0.95, min_dist_factor=10.0, max_clusters=20, merge_radius_factor=5.0)
 skel.main()
