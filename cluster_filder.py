@@ -109,6 +109,7 @@ class skeletonizer:
         edge_color = np.array([1, 0, 0])  # Red
         centroid_color = np.array([0, 0.5, 1])  # Blue-ish for centroid
         raw_edge_points = []
+        raw_edge_clusters = []  # List of lists of cluster indices
         raw_centroids = []
         for k in range(best_k):
             cluster_mask = (labels == k)
@@ -119,22 +120,40 @@ class skeletonizer:
             for ei in edge_indices:
                 if 0 <= ei < len(cluster_points):
                     raw_edge_points.append(cluster_points[ei])
+                    raw_edge_clusters.append([k])
             raw_centroids.append(centroid)
-        return np.array(raw_edge_points), np.array(raw_centroids), edge_color, centroid_color
+        return np.array(raw_edge_points), raw_edge_clusters, np.array(raw_centroids), edge_color, centroid_color
 
-    def merge_edge_points(self, raw_edge_points, points):
+    def merge_edge_points(self, raw_edge_points, raw_edge_clusters, points):
         if len(raw_edge_points) > 0:
             db = DBSCAN(eps=self.merge_radius_factor * self.voxel_size, min_samples=1).fit(raw_edge_points)
             merged_edge_points = []
+            merged_clusters = []
             for label in np.unique(db.labels_):
                 group = raw_edge_points[db.labels_ == label]
+                group_clusters = [c for idx, c in enumerate(raw_edge_clusters) if db.labels_[idx] == label]
+                # Flatten and deduplicate cluster indices
+                merged_cluster = sorted(set(i for sublist in group_clusters for i in sublist))
                 group_centroid = np.mean(group, axis=0)
                 dists = np.linalg.norm(points - group_centroid, axis=1)
                 best_idx = np.argmin(dists)
                 merged_edge_points.append(points[best_idx])
-            return np.array(merged_edge_points)
+                merged_clusters.append(merged_cluster)
+            return np.array(merged_edge_points), merged_clusters
         else:
-            return np.empty((0, 3))
+            return np.empty((0, 3)), []
+    def save_pointcloud_with_clusters(self, points, clusters, filename):
+        """Save a point cloud with a custom cluster label list for each point (as .npz and .pcd)."""
+        # Save as .npz for label persistence
+        np.savez(filename + '.npz', points=points, clusters=np.array(clusters, dtype=object))
+        # Save as .pcd for visualization (labels not preserved in .pcd)
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(points)
+        # Color by number of clusters (for merged points, multi-cluster = blue, single = red)
+        colors = np.array([[0,0,1] if len(c)>1 else [1,0,0] for c in clusters])
+        pcd.colors = o3d.utility.Vector3dVector(colors)
+        o3d.io.write_point_cloud(filename + '.pcd', pcd)
+        print(f"Saved {filename}.npz (with cluster lists) and {filename}.pcd (visualization)")
 
     def save_merged_points(self, merged_edge_points, raw_centroids, edge_color, centroid_color, filename='merged_edges_and_centroids.pcd'):
         vis_pcd = o3d.geometry.PointCloud()
@@ -184,10 +203,12 @@ class skeletonizer:
     def main(self):
         pcd, points = self.load_point_cloud("static_cloud.pcd")
         labels, best_k, best_gmm = self.cluster_detection(points)
-        raw_edge_points, raw_centroids, edge_color, centroid_color = self.extract_edges_and_centroids(points, labels, best_k)
+        raw_edge_points, raw_edge_clusters, raw_centroids, edge_color, centroid_color = self.extract_edges_and_centroids(points, labels, best_k)
         self.plot_point_cloud_with_edges(points, raw_edge_points, raw_centroids, edge_color, centroid_color,
             'Raw Cluster Edges (Red) and Centroids (Blue) in Point Cloud')
-        merged_edge_points = self.merge_edge_points(raw_edge_points, points)
+        merged_edge_points, merged_clusters = self.merge_edge_points(raw_edge_points, raw_edge_clusters, points)
+        self.save_pointcloud_with_clusters(raw_edge_points, raw_edge_clusters, 'edge_points_with_clusters')
+        self.save_pointcloud_with_clusters(merged_edge_points, merged_clusters, 'merged_edge_points_with_clusters')
         self.save_merged_points(merged_edge_points, raw_centroids, edge_color, centroid_color)
         self.plot_point_cloud_with_edges(points, merged_edge_points, raw_centroids, edge_color, centroid_color,
             'Merged Cluster Edges (Red) and Centroids (Blue) in Point Cloud')
