@@ -5,10 +5,10 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from sklearn.cluster import DBSCAN
 from sklearn.mixture import GaussianMixture
+from scipy.sparse.csgraph import minimum_spanning_tree
 
 
 class skeletonizer:
-
     def __init__(self, voxel_size=1.0, super_voxel_factor=4.0,
                  max_edge_points=10, dot_threshold=0.8, min_dist_factor=5.0, max_clusters=20,
                  merge_radius_factor=10.0):
@@ -266,7 +266,6 @@ class skeletonizer:
         For each cluster, interpolate points along MST skeleton edges so that no segment exceeds max_dist * voxel_size.
         Returns: dict {cluster: list of (x, y, z) skeleton points}
         """
-        from scipy.sparse.csgraph import minimum_spanning_tree
         densified = {}
         for k in set(i for clist in merged_clusters for i in clist):
             idxs = [i for i, clist in enumerate(merged_clusters) if k in clist]
