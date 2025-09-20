@@ -9,6 +9,32 @@ from scipy.sparse.csgraph import minimum_spanning_tree
 
 
 class skeletonizer:
+    def add_extension_points(self, merged_edge_points, merged_clusters, centroids, extension_length=5.0):
+        """
+        For each tip edge point (associated with only one cluster), place a point in the direction away from its nearest other merged edge point, extension_length meters beyond the edge point.
+        Returns: np.ndarray of extension points
+        """
+        extension_points = []
+        if len(merged_edge_points) < 2:
+            return np.empty((0, 3))
+        merged_edge_points = np.asarray(merged_edge_points)
+        for i, (pt, clusters) in enumerate(zip(merged_edge_points, merged_clusters)):
+            if len(clusters) == 1:
+                # Find nearest other merged edge point
+                others = np.delete(merged_edge_points, i, axis=0)
+                if len(others) == 0:
+                    continue
+                dists = np.linalg.norm(others - pt, axis=1)
+                nearest = others[np.argmin(dists)]
+                direction = pt - nearest
+                norm = np.linalg.norm(direction)
+                if norm == 0:
+                    continue
+                direction = direction / norm
+                ext_pt = pt + direction * extension_length
+                extension_points.append(ext_pt)
+        return np.array(extension_points)
+    
     def __init__(self, voxel_size=1.0, super_voxel_factor=4.0,
                  max_edge_points=10, dot_threshold=0.8, min_dist_factor=5.0, max_clusters=20,
                  merge_radius_factor=10.0):
@@ -531,13 +557,12 @@ class skeletonizer:
         self.plot_point_cloud_with_edges(points, merged_edge_points, raw_centroids, edge_color, centroid_color,
             'Merged Cluster Edges (Red) and Centroids (Blue) in Point Cloud')
 
-
         # Create detailed skeleton first
         densified = self.densify_skeleton(
             merged_edge_points, merged_clusters, points, labels, 
             self.voxel_size, max_dist=5
         )
-        
+
         # Then merge only the edge points in the skeleton and get updated edge points
         merged_densified, updated_merged_edge_points, updated_merged_clusters = self.merge_skeleton_points(
             densified, merged_edge_points, merged_clusters
@@ -548,13 +573,13 @@ class skeletonizer:
             print(f"Edge point merging changed the number of edge points from {len(merged_edge_points)} to {len(updated_merged_edge_points)}")
         else:
             print("Edge point merging did not change the number of edge points.")
-        
+
         # Plot both versions for comparison
         self.plot_densified_skeletons(
             points, densified, merged_edge_points,
             title="Detailed Skeleton Before Edge Merging"
         )
-        
+
         self.plot_densified_skeletons(
             points, merged_densified, updated_merged_edge_points,
             title="Skeleton After Edge Point Merging"
@@ -563,7 +588,7 @@ class skeletonizer:
         # Update the merged_edge_points with the newly merged ones
         merged_edge_points = updated_merged_edge_points
         merged_clusters = updated_merged_clusters
-        
+
         # Save the cleaned skeleton with updated edge points
         self.save_complete_skeleton(merged_densified, merged_edge_points, merged_clusters)
 
@@ -573,9 +598,20 @@ class skeletonizer:
         # Print duplicate point information
         print(f"Total unique points after densification: {len(unique_points)}")
         print(f"Total duplicate points found: {np.sum(counts > 1)}")
-        
+
         # Also save the updated merged edge points
         self.save_pointcloud_with_clusters(merged_edge_points, merged_clusters, 'final_merged_edge_points')
+
+        # Add extension points at tip edge points
+        extension_points = self.add_extension_points(merged_edge_points, merged_clusters, raw_centroids, extension_length=5.0)
+        if len(extension_points) > 0:
+            print(f"Added {len(extension_points)} extension points at tip edge points.")
+            # Save as PCD for visualization
+            ext_pcd = o3d.geometry.PointCloud()
+            ext_pcd.points = o3d.utility.Vector3dVector(extension_points)
+            ext_pcd.paint_uniform_color([0,1,0])  # Green
+            o3d.io.write_point_cloud('extension_points.pcd', ext_pcd)
+            print("Saved extension_points.pcd for visualization.")
 
 #%%
 skel = skeletonizer(voxel_size=1.0, super_voxel_factor=4.0,
