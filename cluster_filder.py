@@ -7,6 +7,7 @@ from sklearn.mixture import GaussianMixture
 
 
 class skeletonizer:
+
     def __init__(self, voxel_size=1.0, super_voxel_factor=4.0,
                  max_edge_points=10, dot_threshold=0.8, min_dist_factor=5.0, max_clusters=20,
                  merge_radius_factor=10.0):
@@ -142,6 +143,34 @@ class skeletonizer:
             return np.array(merged_edge_points), merged_clusters
         else:
             return np.empty((0, 3)), []
+        
+    def merge_points_within_clusters(self, merged_edge_points, merged_clusters, points):
+        """
+        For each cluster, merge points that are within 2x merge_radius of each other.
+        Returns new merged points and their cluster lists.
+        """
+        from sklearn.cluster import DBSCAN
+        merged_edge_points = np.asarray(merged_edge_points)
+        final_points = []
+        final_clusters = []
+        for k in set(i for clist in merged_clusters for i in clist):
+            idxs = [i for i, clist in enumerate(merged_clusters) if k in clist]
+            if len(idxs) == 0:
+                continue
+            pts = merged_edge_points[idxs]
+            db = DBSCAN(eps=2 * self.merge_radius_factor * self.voxel_size, min_samples=1).fit(pts)
+            for label in np.unique(db.labels_):
+                group = pts[db.labels_ == label]
+                group_idxs = np.array(idxs)[db.labels_ == label]
+                group_clusters = [merged_clusters[i] for i in group_idxs]
+                merged_cluster = sorted(set(i for sublist in group_clusters for i in sublist))
+                group_centroid = np.mean(group, axis=0)
+                dists = np.linalg.norm(points - group_centroid, axis=1)
+                best_idx = np.argmin(dists)
+                final_points.append(points[best_idx])
+                final_clusters.append(merged_cluster)
+        return np.array(final_points), final_clusters
+        
     def save_pointcloud_with_clusters(self, points, clusters, filename):
         """Save a point cloud with a custom cluster label list for each point (as .npz and .pcd)."""
         # Save as .npz for label persistence
@@ -207,6 +236,7 @@ class skeletonizer:
         self.plot_point_cloud_with_edges(points, raw_edge_points, raw_centroids, edge_color, centroid_color,
             'Raw Cluster Edges (Red) and Centroids (Blue) in Point Cloud')
         merged_edge_points, merged_clusters = self.merge_edge_points(raw_edge_points, raw_edge_clusters, points)
+        merged_edge_points, merged_clusters = self.merge_points_within_clusters(merged_edge_points, merged_clusters, points)
         self.save_pointcloud_with_clusters(raw_edge_points, raw_edge_clusters, 'edge_points_with_clusters')
         self.save_pointcloud_with_clusters(merged_edge_points, merged_clusters, 'merged_edge_points_with_clusters')
         self.save_merged_points(merged_edge_points, raw_centroids, edge_color, centroid_color)
