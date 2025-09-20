@@ -308,7 +308,64 @@ class skeletonizer:
                 densified[k] = np.array(list(skel_points))
         
         return densified
-    
+
+    def merge_skeleton_points(self, densified, merged_edge_points, merged_clusters):
+        """
+        Merge only the original edge points in the skeleton, keeping interpolated points intact
+        Returns: merged_densified, updated_merged_edge_points
+        """
+        from sklearn.cluster import DBSCAN
+        
+        merged_densified = {}
+        updated_merged_edge_points = []  # Store the newly merged edge points
+        updated_merged_clusters = []     # Store updated cluster associations
+        
+        for k, skel_pts in densified.items():
+            if len(skel_pts) < 2:
+                merged_densified[k] = skel_pts
+                continue
+            
+            # Identify which skeleton points are original edge points
+            cluster_edge_idxs = [i for i, clist in enumerate(merged_clusters) if k in clist]
+            cluster_edge_pts = merged_edge_points[cluster_edge_idxs] if cluster_edge_idxs else np.array([])
+            
+            edge_mask = self._identify_edge_points_in_skeleton(skel_pts, cluster_edge_pts)
+            edge_points = skel_pts[edge_mask]
+            interpolated_points = skel_pts[~edge_mask]
+            
+            # Merge only the edge points
+            if len(edge_points) > 1:
+                db = DBSCAN(eps=self.merge_radius_factor * self.voxel_size, min_samples=1).fit(edge_points)
+                merged_edge_points_list = []
+                
+                for label in np.unique(db.labels_):
+                    cluster_points = edge_points[db.labels_ == label]
+                    # Use centroid of merged edge points
+                    merged_point = np.mean(cluster_points, axis=0)
+                    merged_edge_points_list.append(merged_point)
+                    
+                    # Add to updated merged edge points with cluster association
+                    updated_merged_edge_points.append(merged_point)
+                    updated_merged_clusters.append([k])  # Single cluster association
+                
+                # Combine merged edge points with original interpolated points
+                final_points = np.vstack([merged_edge_points_list, interpolated_points])
+            else:
+                final_points = skel_pts
+                # Keep original edge points if not merged
+                if len(edge_points) == 1:
+                    updated_merged_edge_points.append(edge_points[0])
+                    updated_merged_clusters.append([k])
+            
+            merged_densified[k] = final_points
+        
+        # Convert to numpy arrays
+        updated_merged_edge_points = np.array(updated_merged_edge_points)
+        updated_merged_clusters = np.array(updated_merged_clusters)
+
+        return merged_densified, updated_merged_edge_points, updated_merged_clusters
+
+        
     def plot_densified_skeletons(self, points, densified, merged_edge_points, title="Complete Skeleton with Edge Points"):
         """
         Plot the complete skeleton including edge points as key skeleton points
@@ -327,15 +384,15 @@ class skeletonizer:
             
             # Plot all skeleton points (including edge points)
             ax.scatter(skel_pts[:, 0], skel_pts[:, 1], skel_pts[:, 2], 
-                    c=color, s=40, alpha=0.8, label=f'Cluster {k} Skeleton')
+                color=color, s=40, alpha=0.8, label=f'Cluster {k} Skeleton')
             
             # Highlight the original edge points within the skeleton
             edge_mask = self._identify_edge_points_in_skeleton(skel_pts, merged_edge_points)
             if np.any(edge_mask):
                 edge_pts = skel_pts[edge_mask]
-                ax.scatter(edge_pts[:, 0], edge_pts[:, 1], edge_pts[:, 2], 
-                        c=color, s=100, marker='o', edgecolors='black', 
-                        linewidth=2.0, label=f'Cluster {k} Key Points')
+            ax.scatter(edge_pts[:, 0], edge_pts[:, 1], edge_pts[:, 2], 
+                color=color, s=100, marker='o', edgecolors='black', 
+                linewidth=2.0, label=f'Cluster {k} Key Points')
         
         ax.set_xlabel('X')
         ax.set_ylabel('Y')
@@ -427,34 +484,59 @@ class skeletonizer:
         raw_edge_points, raw_edge_clusters, raw_centroids, edge_color, centroid_color = self.extract_edges_and_centroids(points, labels, best_k)
         self.plot_point_cloud_with_edges(points, raw_edge_points, raw_centroids, edge_color, centroid_color,
             'Raw Cluster Edges (Red) and Centroids (Blue) in Point Cloud')
-        merged_edge_points, merged_clusters = self.merge_edge_points(raw_edge_points, raw_edge_clusters, points)
-        merged_edge_points, merged_clusters = self.merge_points_within_clusters(merged_edge_points, merged_clusters, points)
+        # merged_edge_points, merged_clusters = self.merge_edge_points(raw_edge_points, raw_edge_clusters, points)
+        merged_edge_points, merged_clusters = self.merge_points_within_clusters(raw_edge_points, raw_edge_clusters, points)
         self.save_pointcloud_with_clusters(raw_edge_points, raw_edge_clusters, 'edge_points_with_clusters')
         self.save_pointcloud_with_clusters(merged_edge_points, merged_clusters, 'merged_edge_points_with_clusters')
         self.save_merged_points(merged_edge_points, raw_centroids, edge_color, centroid_color)
         self.plot_point_cloud_with_edges(points, merged_edge_points, raw_centroids, edge_color, centroid_color,
             'Merged Cluster Edges (Red) and Centroids (Blue) in Point Cloud')
-            # Densify skeletons so all segments <= 5*voxel_size
-        # The merged edge points are now integrated into the skeleton
+
+
+        # Create detailed skeleton first
         densified = self.densify_skeleton(
             merged_edge_points, merged_clusters, points, labels, 
             self.voxel_size, max_dist=5
         )
         
-        # Plot the complete skeleton with edge points included
+        # Then merge only the edge points in the skeleton and get updated edge points
+        merged_densified, updated_merged_edge_points, updated_merged_clusters = self.merge_skeleton_points(
+            densified, merged_edge_points, merged_clusters
+        )
+
+        # Test if merging changes anything
+        if len(updated_merged_edge_points) != len(merged_edge_points):
+            print(f"Edge point merging changed the number of edge points from {len(merged_edge_points)} to {len(updated_merged_edge_points)}")
+        else:
+            print("Edge point merging did not change the number of edge points.")
+
+        # Update the merged_edge_points with the newly merged ones
+        merged_edge_points = updated_merged_edge_points
+        merged_clusters = updated_merged_clusters
+        
+        # Plot both versions for comparison
         self.plot_densified_skeletons(
             points, densified, merged_edge_points,
-            title="Complete Skeleton with Integrated Edge Points"
+            title="Detailed Skeleton Before Edge Merging"
         )
-        # Save the complete skeleton with edge points marked
-        self.save_complete_skeleton(densified, merged_edge_points, merged_clusters)
+        
+        self.plot_densified_skeletons(
+            points, merged_densified, merged_edge_points,
+            title="Skeleton After Edge Point Merging"
+        )
+        
+        # Save the cleaned skeleton with updated edge points
+        self.save_complete_skeleton(merged_densified, merged_edge_points, merged_clusters)
 
         # Check for duplicate points
-        unique_points, counts = self.check_duplicate_points(densified)
+        unique_points, counts = self.check_duplicate_points(merged_densified)
 
         # Print duplicate point information
         print(f"Total unique points after densification: {len(unique_points)}")
         print(f"Total duplicate points found: {np.sum(counts > 1)}")
+        
+        # Also save the updated merged edge points
+        self.save_pointcloud_with_clusters(merged_edge_points, merged_clusters, 'final_merged_edge_points')
 
 #%%
 skel = skeletonizer(voxel_size=1.0, super_voxel_factor=4.0,
