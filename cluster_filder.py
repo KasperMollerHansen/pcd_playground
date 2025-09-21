@@ -2,7 +2,6 @@ import collections
 import numpy as np
 import open3d as o3d
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 from sklearn.cluster import DBSCAN
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import NearestNeighbors
@@ -490,8 +489,6 @@ class skeletonizer:
         """
         if len(skeleton_points) == 0 or len(merged_edge_points) == 0:
             return np.zeros(len(skeleton_points), dtype=bool)
-        
-        from sklearn.neighbors import NearestNeighbors
         
         # Find nearest edge point for each skeleton point
         nn = NearestNeighbors(n_neighbors=1)
